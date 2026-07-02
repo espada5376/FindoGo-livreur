@@ -136,12 +136,14 @@ router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
   }
 })
 
-// ── POST /commandes/demarrer-livraison ────────────────────────────────────
-// Livreur clique "Je pars vers le client" → statut en route + notif + WhatsApp
-router.post('/demarrer-livraison', isLivreur, async (req: Request, res: Response) => {
-  const { id_commande, livreurId } = req.body ?? {}
-  if (!id_commande)
-    return res.status(400).json({ success: false, message: 'id_commande manquant' })
+// ── POST /demarrer-tournee ─────────────────────────────────────────────────
+// Démarre toutes les commandes réservées en une fois (sans WhatsApp).
+// Le WhatsApp est envoyé séparément via /notifier-client quand le livreur
+// se dirige réellement vers chaque client.
+router.post('/demarrer-tournee', isLivreur, async (req: Request, res: Response) => {
+  const { id_commandes, livreurId } = req.body ?? {}
+  if (!Array.isArray(id_commandes) || id_commandes.length === 0)
+    return res.status(400).json({ success: false, message: 'id_commandes manquant' })
 
   const client = await pool.connect()
   try {
@@ -150,59 +152,74 @@ router.post('/demarrer-livraison', isLivreur, async (req: Request, res: Response
     const updated = await client.query<{ id_commande: number; id_client_utilisateur: number | null }>(
       `UPDATE commandes
        SET status_commande = 'livreur en route'
-       WHERE id_commande = $1
+       WHERE id_commande = ANY($1)
          AND id_livreur  = $2
          AND status_commande::text = 'nouvelle commande'
        RETURNING id_commande, id_client_utilisateur`,
-      [Number(id_commande), livreurId],
+      [id_commandes.map(Number), livreurId],
     )
 
-    if (!updated.rows[0]) {
-      await client.query('ROLLBACK')
-      return res.status(409).json({ success: false, message: 'Commande introuvable ou déjà en route' })
-    }
-
-    const idClient = updated.rows[0].id_client_utilisateur
-    if (idClient) {
-      await client.query(
-        `INSERT INTO notifications
-           (id_utilisateur, role_notification, context_notification, reference_id, status_notification, date_envoi_notification)
-         VALUES ($1, 'acheteur', 'commande_livreur_en_route', $2, 0, NOW())`,
-        [idClient, id_commande],
-      )
+    // Notifications in-app uniquement
+    for (const row of updated.rows) {
+      if (row.id_client_utilisateur) {
+        await client.query(
+          `INSERT INTO notifications
+             (id_utilisateur, role_notification, context_notification, reference_id, status_notification, date_envoi_notification)
+           VALUES ($1, 'acheteur', 'commande_livreur_en_route', $2, 0, NOW())`,
+          [row.id_client_utilisateur, row.id_commande],
+        )
+      }
     }
 
     await client.query('COMMIT')
+    res.json({ success: true, nb_demarrees: updated.rows.length })
+  } catch (err) {
+    await client.query('ROLLBACK')
+    console.error('[demarrer-tournee]', err)
+    res.status(500).json({ success: false, message: 'Erreur serveur' })
+  } finally {
+    client.release()
+  }
+})
 
-    // WhatsApp (non-bloquant)
+// ── POST /notifier-client ──────────────────────────────────────────────────
+// Le livreur appuie "Je pars vers vous" pour un client précis → WhatsApp uniquement.
+router.post('/notifier-client', isLivreur, async (req: Request, res: Response) => {
+  const { id_commande, livreurId } = req.body ?? {}
+  if (!id_commande)
+    return res.status(400).json({ success: false, message: 'id_commande manquant' })
+
+  try {
     const { rows } = await pool.query(
       `SELECT c.nom_client_commande, c.tel_client_commande,
               c.quantite_commande, a.titre_annonce,
               lv.nom_livreur, lv.tel_livreur
        FROM commandes c
-       JOIN annonces a ON a.id_annonce = c.id_annonce
-       JOIN livreurs lv ON lv.id_livreur = $1
-       WHERE c.id_commande = $2 LIMIT 1`,
+       JOIN annonces  a  ON a.id_annonce  = c.id_annonce
+       JOIN livreurs  lv ON lv.id_livreur = $1
+       WHERE c.id_commande = $2
+         AND c.id_livreur  = $1
+         AND c.status_commande::text = 'livreur en route'
+       LIMIT 1`,
       [livreurId, Number(id_commande)],
     )
     const cmd = rows[0]
-    if (cmd?.tel_client_commande) {
-      sendWhatsAppMessage(cmd.tel_client_commande, livreurEnRouteTemplate({
-        nom_client:    cmd.nom_client_commande,
-        titre_annonce: cmd.titre_annonce,
-        quantite:      cmd.quantite_commande,
-        nom_livreur:   cmd.nom_livreur,
-        tel_livreur:   cmd.tel_livreur,
-      })).catch(() => {})
-    }
+    if (!cmd)
+      return res.status(404).json({ success: false, message: 'Commande introuvable ou statut incorrect' })
+
+    // WhatsApp non-bloquant
+    sendWhatsAppMessage(cmd.tel_client_commande, livreurEnRouteTemplate({
+      nom_client:    cmd.nom_client_commande,
+      titre_annonce: cmd.titre_annonce,
+      quantite:      cmd.quantite_commande,
+      nom_livreur:   cmd.nom_livreur,
+      tel_livreur:   cmd.tel_livreur,
+    })).catch(() => {})
 
     res.json({ success: true })
   } catch (err) {
-    await client.query('ROLLBACK')
-    console.error('[demarrer-livraison]', err)
+    console.error('[notifier-client]', err)
     res.status(500).json({ success: false, message: 'Erreur serveur' })
-  } finally {
-    client.release()
   }
 })
 
