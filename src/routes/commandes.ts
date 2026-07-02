@@ -7,10 +7,159 @@ import {
   signalerEchec,
 } from '../models/livreurs'
 import { pool } from '../config/db'
+import { sendWhatsAppMessage, livreurEnRouteTemplate } from '../utils/whatsapp'
 
 const router = Router()
 
 const RAISONS_VALIDES = ['absente', 'injoignable', 'refusee', 'paiement_echoue', 'mauvaise_adresse']
+
+// ── Haversine distance (km) ────────────────────────────────────────────────
+function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R    = 6371
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLon = (lon2 - lon1) * Math.PI / 180
+  const a    = Math.sin(dLat / 2) ** 2
+             + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+// ── POST /commandes/auto-tournee ────────────────────────────────────────────
+// Le livreur envoie sa position → on lui affecte jusqu'à 5 commandes
+// des boutiques les plus proches (coordonnées boutique pour le pickup).
+router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
+  const { latitude, longitude, livreurId } = req.body ?? {}
+  if (!latitude || !longitude)
+    return res.status(400).json({ success: false, message: 'Position manquante' })
+
+  const lat = Number(latitude)
+  const lng = Number(longitude)
+  if (isNaN(lat) || isNaN(lng))
+    return res.status(400).json({ success: false, message: 'Coordonnées invalides' })
+
+  try {
+    // Toutes les commandes en attente non assignées dont la boutique a des coordonnées
+    const { rows } = await pool.query<{
+      id_commande: number
+      id_client_utilisateur: number | null
+      nom_client_commande: string
+      tel_client_commande: string
+      quantite_commande: number
+      mode_paiement_commande: string
+      quartier: string | null
+      lieu_reference: string | null
+      date_commande: string
+      titre_annonce: string
+      prix_unitaire_annonce: number
+      photos: string[]
+      id_boutique: number
+      nom_boutique: string
+      tel_boutique: string
+      whatsapp_boutique: string | null
+      latitude_boutique: number
+      longitude_boutique: number
+      nom_livreur: string
+      tel_livreur: string
+    }>(
+      `SELECT c.id_commande, c.id_client_utilisateur,
+              c.nom_client_commande, c.tel_client_commande,
+              c.quantite_commande, c.mode_paiement_commande,
+              c.quartier, c.lieu_reference, c.date_commande,
+              a.titre_annonce, a.prix_unitaire_annonce, a.photos,
+              b.id_boutique, b.nom_boutique, b.tel_boutique, b.whatsapp_boutique,
+              b.latitude_boutique, b.longitude_boutique,
+              lv.nom_livreur, lv.tel_livreur
+       FROM commandes c
+       JOIN annonces  a  ON a.id_annonce  = c.id_annonce
+       JOIN boutiques b  ON b.id_boutique = c.id_boutique
+       JOIN livreurs  lv ON lv.id_livreur = $1
+       WHERE c.status_commande::text = 'nouvelle commande'
+         AND c.id_livreur IS NULL
+         AND b.latitude_boutique  IS NOT NULL
+         AND b.longitude_boutique IS NOT NULL
+       ORDER BY c.date_commande ASC`,
+      [livreurId],
+    )
+
+    if (rows.length === 0)
+      return res.json({ success: true, commandes: [], message: 'Aucune commande disponible près de vous' })
+
+    // Distance livreur → boutique pour chaque commande
+    const withDist = rows
+      .map(r => ({ ...r, distance_km: haversine(lat, lng, r.latitude_boutique, r.longitude_boutique) }))
+      .sort((a, b) => a.distance_km - b.distance_km)
+
+    // Sélection : on parcourt les boutiques par distance croissante,
+    // on prend toutes leurs commandes jusqu'à atteindre 5 au total.
+    const selected: typeof withDist = []
+    const boutiquesVues = new Set<number>()
+
+    for (const r of withDist) {
+      if (selected.length >= 5) break
+      boutiquesVues.add(r.id_boutique)
+      selected.push(r)
+    }
+
+    // Assignation en transaction
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      const ids = selected.map(s => s.id_commande)
+      const updated = await client.query<{ id_commande: number; id_client_utilisateur: number | null }>(
+        `UPDATE commandes
+         SET status_commande = 'livreur en route', id_livreur = $1
+         WHERE id_commande = ANY($2)
+           AND status_commande::text = 'nouvelle commande'
+           AND id_livreur IS NULL
+         RETURNING id_commande, id_client_utilisateur`,
+        [livreurId, ids],
+      )
+
+      // Notifications in-app
+      for (const row of updated.rows) {
+        if (row.id_client_utilisateur) {
+          await client.query(
+            `INSERT INTO notifications
+               (id_utilisateur, role_notification, context_notification, reference_id, status_notification, date_envoi_notification)
+             VALUES ($1, 'acheteur', 'commande_livreur_en_route', $2, 0, NOW())`,
+            [row.id_client_utilisateur, row.id_commande],
+          )
+        }
+      }
+
+      await client.query('COMMIT')
+
+      // WhatsApp (non-bloquant) — une notif par commande assignée
+      const assignedIds = new Set(updated.rows.map(r => r.id_commande))
+      for (const cmd of selected) {
+        if (!assignedIds.has(cmd.id_commande)) continue
+        const tel = cmd.tel_client_commande
+        if (!tel) continue
+        sendWhatsAppMessage(tel, livreurEnRouteTemplate({
+          nom_client:    cmd.nom_client_commande,
+          titre_annonce: cmd.titre_annonce,
+          quantite:      cmd.quantite_commande,
+          nom_livreur:   cmd.nom_livreur,
+          tel_livreur:   cmd.tel_livreur,
+        })).catch(() => {})
+      }
+
+      const result = selected
+        .filter(s => assignedIds.has(s.id_commande))
+        .map(s => ({ ...s, distance_km: Math.round(s.distance_km * 10) / 10 }))
+
+      res.json({ success: true, commandes: result, nb_assignees: result.length })
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+  } catch (err) {
+    console.error('[auto-tournee]', err)
+    res.status(500).json({ success: false, message: 'Erreur serveur' })
+  }
+})
 
 router.post('/commandes-proches', isLivreur, async (req: Request, res: Response) => {
   try {
