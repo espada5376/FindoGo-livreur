@@ -13,6 +13,18 @@ const router = Router()
 
 const RAISONS_VALIDES = ['absente', 'injoignable', 'refusee', 'paiement_echoue', 'mauvaise_adresse']
 
+// Créneaux de tournée (heure de Lomé = UTC+0)
+const CRENEAUX = [
+  { debut: '09:00', fin: '12:00' },
+  { debut: '13:30', fin: '16:30' },
+  { debut: '17:00', fin: '20:00' },
+]
+function dansCreneauActif(): boolean {
+  const now   = new Date()
+  const hhmm  = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`
+  return CRENEAUX.some(c => hhmm >= c.debut && hhmm < c.fin)
+}
+
 // ── Haversine distance (km) ────────────────────────────────────────────────
 function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R    = 6371
@@ -27,6 +39,12 @@ function haversine(lat1: number, lon1: number, lat2: number, lon2: number): numb
 // Le livreur envoie sa position → on lui affecte jusqu'à 5 commandes
 // des boutiques les plus proches (coordonnées boutique pour le pickup).
 router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
+  if (!dansCreneauActif())
+    return res.status(403).json({
+      success: false,
+      message: "Aucune tournée en dehors des créneaux : 9h–12h, 13h30–16h30, 17h–20h.",
+    })
+
   const { latitude, longitude, livreurId } = req.body ?? {}
   if (!latitude || !longitude)
     return res.status(400).json({ success: false, message: 'Position manquante' })
