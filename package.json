@@ -11,23 +11,25 @@
   "type": "commonjs",
   "license": "ISC",
   "dependencies": {
+    "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.2.0",
     "@types/node": "^25.9.1",
     "@types/pg": "^8.20.0",
-    "cookie-parser": "^1.4.7",
+    "cloudinary": "^2.10.0",
     "compression": "^1.8.1",
-    "@types/compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
     "nodemon": "^3.1.14",
     "pg": "^8.21.0",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
-  },
-  "devDependencies": {}
+  }
 }

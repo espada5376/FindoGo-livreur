@@ -8,6 +8,7 @@ import {
 } from '../models/livreurs'
 import { pool } from '../config/db'
 import { sendWhatsAppMessage, livreurEnRouteTemplate } from '../utils/whatsapp'
+import { uploadMemory, uploadToCloudinary } from '../config/cloudinary'
 
 const router = Router()
 
@@ -327,23 +328,28 @@ router.post('/prendre-commande', isLivreur, async (req: Request, res: Response) 
   }
 })
 
-router.post('/confirmer-livraison', isLivreur, async (req: Request, res: Response) => {
+router.post('/confirmer-livraison', isLivreur, uploadMemory.single('photo'), async (req: Request, res: Response) => {
   const client = await pool.connect()
   try {
     const { id_commande, livreurId } = req.body ?? {}
     if (!id_commande)
       return res.status(400).json({ success: false, message: 'id_commande manquant' })
+    if (!req.file)
+      return res.status(400).json({ success: false, message: 'Photo de confirmation obligatoire' })
+
+    const photoUrl = await uploadToCloudinary(req.file.buffer, 'togomarket/livraisons')
 
     await client.query('BEGIN')
 
     const updated = await client.query(
       `UPDATE commandes
-       SET status_commande = 'produit livré et payé'
+       SET status_commande  = 'produit livré et payé',
+           photo_livraison  = $3
        WHERE id_commande = $1
          AND id_livreur  = $2
          AND status_commande::text = 'en livraison'
        RETURNING id_commande, id_client_utilisateur`,
-      [Number(id_commande), livreurId],
+      [Number(id_commande), livreurId, photoUrl],
     )
 
     if (!updated.rows[0]) {
