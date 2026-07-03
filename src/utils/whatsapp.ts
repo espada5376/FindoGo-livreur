@@ -75,3 +75,23 @@ Notre livreur *${params.nom_livreur}* se dirige vers vous avec :
 
 Merci de rester disponible. Il arrive bientôt ! 🙏`
 }
+
+export function accuseReceptionTemplate(params: {
+  nom_client: string
+  titre_annonce: string
+  quantite: number
+  id_commande: number
+  appUrl: string
+}): string {
+  const lien = `${params.appUrl}/confirmer-reception?token=${params.id_commande}`
+  return `✅ *Commande livrée !*
+
+Bonjour ${params.nom_client} 👋
+
+Votre commande *${params.titre_annonce}* × ${params.quantite} vous a été remise par notre livreur.
+
+Merci de confirmer la réception en cliquant sur le lien ci-dessous :
+👉 ${lien}
+
+_TogoMarket_`
+}

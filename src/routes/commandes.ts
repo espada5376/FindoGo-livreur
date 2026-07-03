@@ -7,7 +7,7 @@ import {
   signalerEchec,
 } from '../models/livreurs'
 import { pool } from '../config/db'
-import { sendWhatsAppMessage, livreurEnRouteTemplate } from '../utils/whatsapp'
+import { sendWhatsAppMessage, livreurEnRouteTemplate, accuseReceptionTemplate } from '../utils/whatsapp'
 import { uploadMemory, uploadToCloudinary } from '../config/cloudinary'
 
 const router = Router()
@@ -385,6 +385,27 @@ router.post('/confirmer-livraison', isLivreur, uploadMemory.single('photo'), asy
 
     await client.query('COMMIT')
     res.json({ success: true, message: 'Livraison confirmée' })
+
+    // Envoyer accusé de réception WhatsApp à l'acheteur
+    pool.query(
+      `SELECT c.tel_client_commande, c.nom_client_commande,
+              a.titre_annonce, c.quantite_commande
+       FROM commandes c
+       INNER JOIN annonces a ON a.id_annonce = c.id_annonce
+       WHERE c.id_commande = $1 LIMIT 1`,
+      [Number(id_commande)],
+    ).then(({ rows }) => {
+      const cmd = rows[0]
+      if (!cmd?.tel_client_commande) return
+      const appUrl = process.env.FRONT_URL || 'https://togomarket.tg'
+      sendWhatsAppMessage(cmd.tel_client_commande, accuseReceptionTemplate({
+        nom_client:    cmd.nom_client_commande,
+        titre_annonce: cmd.titre_annonce,
+        quantite:      cmd.quantite_commande,
+        id_commande:   Number(id_commande),
+        appUrl,
+      })).catch(() => {})
+    }).catch(() => {})
   } catch (err) {
     await client.query('ROLLBACK')
     console.error(err)
