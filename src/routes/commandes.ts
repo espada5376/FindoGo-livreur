@@ -90,7 +90,7 @@ router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
        JOIN annonces  a  ON a.id_annonce  = c.id_annonce
        JOIN boutiques b  ON b.id_boutique = c.id_boutique
        JOIN livreurs  lv ON lv.id_livreur = $1
-       WHERE c.status_commande::text = 'nouvelle commande'
+       WHERE c.status_commande::text = 'confirmé'
          AND c.id_livreur IS NULL
          AND b.latitude_boutique  IS NOT NULL
          AND b.longitude_boutique IS NOT NULL
@@ -118,7 +118,7 @@ router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
     }
 
     // Réservation en transaction : on assigne le livreur sans changer le statut.
-    // Le statut "livreur en route" + WhatsApp se déclenchent via /demarrer-livraison.
+    // Le statut "en livraison" + WhatsApp se déclenchent via /demarrer-livraison.
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
@@ -128,7 +128,7 @@ router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
         `UPDATE commandes
          SET id_livreur = $1
          WHERE id_commande = ANY($2)
-           AND status_commande::text = 'nouvelle commande'
+           AND status_commande::text = 'confirmé'
            AND id_livreur IS NULL
          RETURNING id_commande`,
         [livreurId, ids],
@@ -169,10 +169,10 @@ router.post('/demarrer-tournee', isLivreur, async (req: Request, res: Response) 
 
     const updated = await client.query<{ id_commande: number; id_client_utilisateur: number | null }>(
       `UPDATE commandes
-       SET status_commande = 'livreur en route'
+       SET status_commande = 'en livraison'
        WHERE id_commande = ANY($1)
          AND id_livreur  = $2
-         AND status_commande::text = 'nouvelle commande'
+         AND status_commande::text = 'confirmé'
        RETURNING id_commande, id_client_utilisateur`,
       [id_commandes.map(Number), livreurId],
     )
@@ -217,7 +217,7 @@ router.post('/notifier-client', isLivreur, async (req: Request, res: Response) =
        JOIN livreurs  lv ON lv.id_livreur = $1
        WHERE c.id_commande = $2
          AND c.id_livreur  = $1
-         AND c.status_commande::text = 'livreur en route'
+         AND c.status_commande::text = 'en livraison'
        LIMIT 1`,
       [livreurId, Number(id_commande)],
     )
@@ -274,7 +274,7 @@ router.get('/commande/:id', isLivreur, async (req: Request, res: Response) => {
 router.get('/mes-livraisons', isLivreur, async (req: Request, res: Response) => {
   try {
     const { livreurId } = req.body
-    const statut = (req.query.statut as string) || 'livreur en route'
+    const statut = (req.query.statut as string) || 'en livraison'
     const livraisons = await getMesLivraisons(livreurId, statut)
     res.json({ success: true, livraisons })
   } catch (err) {
@@ -294,9 +294,9 @@ router.post('/prendre-commande', isLivreur, async (req: Request, res: Response) 
 
     const result = await client.query(
       `UPDATE commandes
-       SET status_commande = 'livreur en route', id_livreur = $1
+       SET status_commande = 'en livraison', id_livreur = $1
        WHERE id_commande = $2
-         AND status_commande::text = 'nouvelle commande'
+         AND status_commande::text = 'confirmé'
          AND id_livreur IS NULL
        RETURNING id_commande, id_client_utilisateur`,
       [livreurId, Number(id_commande)],
@@ -341,7 +341,7 @@ router.post('/confirmer-livraison', isLivreur, async (req: Request, res: Respons
        SET status_commande = 'produit livré et payé'
        WHERE id_commande = $1
          AND id_livreur  = $2
-         AND status_commande::text = 'livreur en route'
+         AND status_commande::text = 'en livraison'
        RETURNING id_commande, id_client_utilisateur`,
       [Number(id_commande), livreurId],
     )
