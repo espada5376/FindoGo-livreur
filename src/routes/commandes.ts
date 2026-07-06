@@ -91,7 +91,7 @@ router.post('/auto-tournee', isLivreur, async (req: Request, res: Response) => {
        JOIN annonces  a  ON a.id_annonce  = c.id_annonce
        JOIN boutiques b  ON b.id_boutique = c.id_boutique
        JOIN livreurs  lv ON lv.id_livreur = $1
-       WHERE c.status_commande::text = 'confirmé'
+       WHERE c.status_commande::text = 'en livraison'
          AND c.id_livreur IS NULL
          AND b.latitude_boutique  IS NOT NULL
          AND b.longitude_boutique IS NOT NULL
