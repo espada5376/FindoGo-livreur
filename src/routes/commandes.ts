@@ -17,7 +17,7 @@ const RAISONS_VALIDES = ['absente', 'injoignable', 'refusee', 'paiement_echoue',
 // Créneaux de tournée (heure de Lomé = UTC+0)
 const CRENEAUX = [
   { debut: '09:00', fin: '12:00' },
-  { debut: '13:30', fin: '16:30' },
+  { debut: '13:30', fin: '16:59' },
   { debut: '17:00', fin: '20:00' },
 ]
 function dansCreneauActif(): boolean {
